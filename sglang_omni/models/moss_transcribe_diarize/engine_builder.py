@@ -85,9 +85,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
 
     def infra_kwargs(self) -> dict[str, Any]:
         kwargs = super().infra_kwargs()
-        if hasattr(self, "_tp_rank") and self._tp_rank is not None:
-            kwargs["tp_rank"] = self._tp_rank
-        if hasattr(self, "_nccl_port") and self._nccl_port is not None:
+        kwargs["tp_rank"] = self._tp_rank
+        if self._nccl_port is not None:
             kwargs["nccl_port"] = self._nccl_port
         return kwargs
 

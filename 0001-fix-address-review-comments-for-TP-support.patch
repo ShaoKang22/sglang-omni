@@ -1,0 +1,74 @@
+From 4b443bd366ac6e5ce1bf18651a90cd21846714ed Mon Sep 17 00:00:00 2001
+From: ShaoKang22 <ShaoKang22@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 15:00:36 +0800
+Subject: [PATCH] fix: address review comments for TP support
+
+- Remove redundant hasattr checks in infra_kwargs
+- Only strip cuda_graph params when tp_size > 1
+- Restore deleted design comments
+---
+ .../moss_transcribe_diarize/engine_builder.py  |  5 ++---
+ .../models/moss_transcribe_diarize/stages.py   | 18 ++++++++++++------
+ 2 files changed, 14 insertions(+), 9 deletions(-)
+
+diff --git a/sglang_omni/models/moss_transcribe_diarize/engine_builder.py b/sglang_omni/models/moss_transcribe_diarize/engine_builder.py
+index 18751fb..650c415 100644
+--- a/sglang_omni/models/moss_transcribe_diarize/engine_builder.py
++++ b/sglang_omni/models/moss_transcribe_diarize/engine_builder.py
+@@ -85,9 +85,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
+ 
+     def infra_kwargs(self) -> dict[str, Any]:
+         kwargs = super().infra_kwargs()
+-        if hasattr(self, "_tp_rank") and self._tp_rank is not None:
+-            kwargs["tp_rank"] = self._tp_rank
+-        if hasattr(self, "_nccl_port") and self._nccl_port is not None:
++        kwargs["tp_rank"] = self._tp_rank
++        if self._nccl_port is not None:
+             kwargs["nccl_port"] = self._nccl_port
+         return kwargs
+ 
+diff --git a/sglang_omni/models/moss_transcribe_diarize/stages.py b/sglang_omni/models/moss_transcribe_diarize/stages.py
+index 05c26e7..b94a8f5 100644
+--- a/sglang_omni/models/moss_transcribe_diarize/stages.py
++++ b/sglang_omni/models/moss_transcribe_diarize/stages.py
+@@ -13,6 +13,10 @@ from sglang_omni.models.moss_transcribe_diarize import (  # noqa: F401
+     hf_config as _hf_config,
+ )
+ 
++# Note (yijiang): Dense buckets avoid CUDA-graph capture at padded sizes
++# we don't hit; pad-to-power-of-2 would tax a compute-bound encoder with
++# no cross-request batching yet.
++# Cap tuned to p99 audio duration ([1,8] covers up to ~4min)
+ _DEFAULT_ENCODER_CHUNK_BUCKETS = list(range(1, 9))
+ 
+ 
+@@ -88,6 +92,8 @@ def create_sglang_moss_transcribe_diarize_executor(
+     encoder_chunk_buckets: list[int] | None = None,
+     encoder_torch_compile: bool = False,
+     encoder_max_batch_size: int = 2,
++    # note (yichi): 8 parallel mel extractions measured optimal; fewer starve
++    # the encoder feed, more oversubscribe the CPU.
+     request_build_max_workers: int = 8,
+     request_build_max_pending: int | None = 16,
+     stream_emit_interval_s: float = 0.05,
+@@ -109,12 +115,12 @@ def create_sglang_moss_transcribe_diarize_executor(
+     effective_overrides = dict(server_args_overrides) if server_args_overrides else {}
+     if tp_size > 1:
+         effective_overrides["tp_size"] = tp_size
+-    for _k in (
+-        "cuda_graph_max_bs", "cuda_graph_bs",
+-        "cuda_graph_max_bs_decode", "cuda_graph_bs_decode",
+-        "sampling_backend", "torch_compile_max_bs",
+-    ):
+-        effective_overrides.pop(_k, None)
++        for _k in (
++            "cuda_graph_max_bs", "cuda_graph_bs",
++            "cuda_graph_max_bs_decode", "cuda_graph_bs_decode",
++            "sampling_backend", "torch_compile_max_bs",
++        ):
++            effective_overrides.pop(_k, None)
+ 
+     builder = MossTranscribeDiarizeEngineBuilder(
+         max_running_requests=max_running_requests,
+-- 
+2.43.0

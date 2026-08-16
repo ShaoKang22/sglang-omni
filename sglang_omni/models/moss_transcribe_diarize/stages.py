@@ -13,6 +13,10 @@ from sglang_omni.models.moss_transcribe_diarize import (  # noqa: F401
     hf_config as _hf_config,
 )
 
+# Note (yijiang): Dense buckets avoid CUDA-graph capture at padded sizes
+# we don't hit; pad-to-power-of-2 would tax a compute-bound encoder with
+# no cross-request batching yet.
+# Cap tuned to p99 audio duration ([1,8] covers up to ~4min)
 _DEFAULT_ENCODER_CHUNK_BUCKETS = list(range(1, 9))
 
 
@@ -88,6 +92,8 @@ def create_sglang_moss_transcribe_diarize_executor(
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
     encoder_max_batch_size: int = 2,
+    # note (yichi): 8 parallel mel extractions measured optimal; fewer starve
+    # the encoder feed, more oversubscribe the CPU.
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     stream_emit_interval_s: float = 0.05,
@@ -109,12 +115,12 @@ def create_sglang_moss_transcribe_diarize_executor(
     effective_overrides = dict(server_args_overrides) if server_args_overrides else {}
     if tp_size > 1:
         effective_overrides["tp_size"] = tp_size
-    for _k in (
-        "cuda_graph_max_bs", "cuda_graph_bs",
-        "cuda_graph_max_bs_decode", "cuda_graph_bs_decode",
-        "sampling_backend", "torch_compile_max_bs",
-    ):
-        effective_overrides.pop(_k, None)
+        for _k in (
+            "cuda_graph_max_bs", "cuda_graph_bs",
+            "cuda_graph_max_bs_decode", "cuda_graph_bs_decode",
+            "sampling_backend", "torch_compile_max_bs",
+        ):
+            effective_overrides.pop(_k, None)
 
     builder = MossTranscribeDiarizeEngineBuilder(
         max_running_requests=max_running_requests,
