@@ -13,16 +13,11 @@ from sglang_omni.models.moss_transcribe_diarize import (  # noqa: F401
     hf_config as _hf_config,
 )
 
-# Note (yijiang): Dense buckets avoid CUDA-graph capture at padded sizes
-# we don't hit; pad-to-power-of-2 would tax a compute-bound encoder with
-# no cross-request batching yet.
-# Cap tuned to p99 audio duration ([1,8] covers up to ~4min)
 _DEFAULT_ENCODER_CHUNK_BUCKETS = list(range(1, 9))
 
 
 @contextmanager
 def _missing_additional_chat_templates_compat() -> Iterator[None]:
-    """Treat a missing optional chat-template directory as no extra templates."""
     import transformers.processing_utils as processing_utils
     import transformers.utils.hub as hub_utils
     from huggingface_hub.errors import RepositoryNotFoundError
@@ -93,12 +88,13 @@ def create_sglang_moss_transcribe_diarize_executor(
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
     encoder_max_batch_size: int = 2,
-    # note (yichi): 8 parallel mel extractions measured optimal; fewer starve
-    # the encoder feed, more oversubscribe the CPU.
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,
+    tp_size: int = 1,
+    tp_rank: int = 0,
+    nccl_port: int | None = None,
 ):
     from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
         MossTranscribeDiarizeEngineBuilder,
@@ -109,7 +105,18 @@ def create_sglang_moss_transcribe_diarize_executor(
         if encoder_chunk_buckets is not None
         else _DEFAULT_ENCODER_CHUNK_BUCKETS
     )
-    return MossTranscribeDiarizeEngineBuilder(
+
+    effective_overrides = dict(server_args_overrides) if server_args_overrides else {}
+    if tp_size > 1:
+        effective_overrides["tp_size"] = tp_size
+    for _k in (
+        "cuda_graph_max_bs", "cuda_graph_bs",
+        "cuda_graph_max_bs_decode", "cuda_graph_bs_decode",
+        "sampling_backend", "torch_compile_max_bs",
+    ):
+        effective_overrides.pop(_k, None)
+
+    builder = MossTranscribeDiarizeEngineBuilder(
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         context_length=context_length,
@@ -135,11 +142,15 @@ def create_sglang_moss_transcribe_diarize_executor(
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
         stream_emit_interval_s=stream_emit_interval_s,
-    ).build(
+    )
+    builder._tp_rank = tp_rank
+    builder._nccl_port = nccl_port
+
+    return builder.build(
         model_path,
         device=device,
         dtype=dtype,
-        server_args_overrides=server_args_overrides,
+        server_args_overrides=effective_overrides if effective_overrides else None,
     )
 
 
